@@ -212,19 +212,8 @@
     .auth-title { font-family: 'Cormorant Garamond', serif; font-size: 26px; font-weight: 700; color: white; margin-bottom: 4px; }
     .auth-sub { font-size: 12px; color: rgba(255,255,255,0.45); margin-bottom: 14px; line-height: 1.5; }
 
-    .role-selector { display: flex; gap: 8px; margin-bottom: 14px; }
-    .role-btn {
-      flex: 1; padding: 10px 10px; border-radius: 8px;
-      border: 1.5px solid rgba(255,255,255,0.12);
-      background: transparent; cursor: pointer; transition: all 0.2s;
-      display: flex; align-items: center; gap: 8px; text-align: left;
-    }
-    .role-btn.selected { border-color: var(--yellow); background: rgba(245,197,24,0.08); }
-    .role-icon { font-size: 18px; flex-shrink: 0; }
-    .role-label { font-family: 'Syne', sans-serif; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: rgba(255,255,255,0.5); transition: color 0.2s; display: block; }
-    .role-btn.selected .role-label { color: var(--yellow); }
-    .role-desc { font-size: 10px; color: rgba(255,255,255,0.3); margin-top: 2px; line-height: 1.2; display: block; }
-    .role-btn.selected .role-desc { color: rgba(245,197,24,0.6); }
+
+
 
     .form-group { margin-bottom: 10px; }
     .form-label { font-family: 'Syne', sans-serif; font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: rgba(255,255,255,0.5); display: block; margin-bottom: 6px; }
@@ -595,17 +584,7 @@
       <!-- SIGNUP FORM -->
       <div id="formSignup" style="display:none;">
         <div class="auth-title">Create account</div>
-        <div class="auth-sub">Join as a Client to report concerns, or as an Agent to manage cases.</div>
-        <div class="role-selector">
-          <button class="role-btn selected" id="roleClient" onclick="selectRole('client')">
-            <span class="role-icon">🙋</span>
-            <div><span class="role-label">Client</span><span class="role-desc">Report a concern or seek help</span></div>
-          </button>
-          <button class="role-btn" id="roleAgent" onclick="selectRole('agent')">
-            <span class="role-icon">🛡️</span>
-            <div><span class="role-label">Agent</span><span class="role-desc">Manage and resolve cases</span></div>
-          </button>
-        </div>
+        <div class="auth-sub">Join us to report concerns and seek help from our organization.</div>
         <div class="form-group">
           <label class="form-label">Full Name</label>
           <input class="form-input" type="text" id="signupName" placeholder="Your full name" />
@@ -677,21 +656,54 @@
      SCRIPTS
 ══════════════════════════════════════ -->
 <script>
-/* ─── CONFIG ─── */
-const GEMINI_API_KEY = "YOUR_GEMINI_API_KEY";
-const SUPABASE_URL   = "YOUR_SUPABASE_URL";
-const SUPABASE_ANON  = "YOUR_SUPABASE_ANON_KEY";
+/* ─── CONFIG FROM .env ─── */
+const envVars = {};
+
+// Load .env file when page starts
+async function loadEnv() {
+  try {
+    const response = await fetch('.env');
+    if (!response.ok) throw new Error('No .env file');
+    
+    const text = await response.text();
+    const lines = text.split('\n');
+    
+    lines.forEach(line => {
+      const trimmed = line.trim();
+      if (trimmed && !trimmed.startsWith('#')) {
+        const [key, ...valueParts] = trimmed.split('=');
+        if (key) {
+          envVars[key.trim()] = valueParts.join('=').trim();
+        }
+      }
+    });
+    
+    console.log('✅ .env loaded successfully');
+    console.log('Keys loaded:', Object.keys(envVars));
+  } catch (error) {
+    console.warn('⚠️ .env not found or error loading:', error.message);
+    console.warn('Make sure you\'re running a local server (not file://)');
+  }
+}
+
+// Call on page load
+loadEnv();
+
+// Functions to get values
+const GEMINI_API_KEY = () => envVars.GEMINI_API_KEY || 'YOUR_GEMINI_API_KEY';
+const SUPABASE_URL = () => envVars.SUPABASE_URL || 'YOUR_SUPABASE_URL';
+const SUPABASE_ANON = () => envVars.SUPABASE_ANON_KEY || 'YOUR_SUPABASE_ANON_KEY';
 
 /* Supabase stub — replace with real client when deploying:
    import { createClient } from '@supabase/supabase-js'
-   const _supabase = createClient(SUPABASE_URL, SUPABASE_ANON)        */
+   const _supabase = createClient(SUPABASE_URL(), SUPABASE_ANON())        */
 const _supabase = null;
 
 /* ═══════════════════════════════════════
    AUTH STATE
 ═══════════════════════════════════════ */
 let currentUser = JSON.parse(sessionStorage.getItem('hrUser') || 'null');
-let selectedRole = 'client';
+
 
 function saveUser(u) {
   currentUser = u;
@@ -771,7 +783,6 @@ function tryOpenHelpDesk() {
 
 function openHelpDesk() {
   showPage('page-helpdesk');
-  if (!sessionStarted) initChatSession();
 }
 
 function closeHelpDesk() {
@@ -790,11 +801,6 @@ function switchTab(tab) {
   clearAuthMessages();
 }
 
-function selectRole(role) {
-  selectedRole = role;
-  document.getElementById('roleClient').classList.toggle('selected', role === 'client');
-  document.getElementById('roleAgent').classList.toggle('selected', role === 'agent');
-}
 
 function showAuthError(msg) {
   const el = document.getElementById('authError');
@@ -862,11 +868,11 @@ async function doSignup() {
     // ── DEMO MODE ──
     const stored = JSON.parse(localStorage.getItem('hrUsers') || '{}');
     if (stored[email]) { showAuthError('An account with this email already exists.'); return; }
-    stored[email] = { name, role: selectedRole, password: btoa(password) };
+    stored[email] = { name, role: 'client', password: btoa(password) };
     localStorage.setItem('hrUsers', JSON.stringify(stored));
 
     // ✅ FIX: Save user first, then go home
-    saveUser({ email, name, role: selectedRole });
+    saveUser({ email, name, role: 'client' });
     showAuthSuccess(`Account created! Welcome, ${name}!`);
     setTimeout(() => {
       goHome();
@@ -885,78 +891,54 @@ async function doSignup() {
 const SYSTEM_PROMPT = `
 You are a professional and compassionate help desk assistant for a global Human Rights organization.
 Your responsibilities:
-- Listen carefully to individuals reporting human rights concerns, violations, or seeking guidance
+- Listen carefully to individuals reporting human rights concerns
 - Provide clear, authoritative guidance on human rights matters
 - Respond in the same language the user writes in
-- Keep responses concise — under 120 words unless the case is complex
-- Maintain a formal, empathetic, and non-judgmental tone
+- Keep responses concise — under 120 words
+- Maintain a formal, empathetic tone
 
 Rules:
 - Only assist with human rights-related matters
-- If someone asks something unrelated: "I am only able to assist with human rights-related concerns."
-- Never provide legal or medical advice — refer to appropriate professionals
-- If the issue requires formal case registration (documented violation, abuse, detention, discrimination, censorship), collect: name, contact info, and a brief summary. Then append:
-  <<<REGISTER_COMPLAINT>>>
-  {"name": "...", "contact": "...", "summary": "...", "category": "human_rights"}
-  <<<END>>>
-- For complex cases needing expert intervention: "We will connect you with one of our human rights specialists."
+- If unrelated: "I am only able to assist with human rights-related concerns."
+- Never provide legal or medical advice
 `;
 
 let conversationHistory = [];
-let sessionKey = null;
-let sessionStarted = false;
-
-async function initChatSession() {
-  sessionStarted = true;
-  sessionKey = 'SESSION-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6).toUpperCase();
-  try {
-    await _supabase?.from('chat_sessions').insert({ session_key: sessionKey, status: 'active', messages: [], user_email: currentUser?.email, user_role: currentUser?.role });
-  } catch(e) {}
-  const greeting = currentUser
-    ? `Welcome, ${currentUser.name}. I am the Human Rights Help Desk assistant. Please describe your concern — whether it involves freedom of expression, discrimination, detention, refugee protection, digital rights, or any other human rights matter. Your information is handled with full confidentiality.`
-    : `Welcome. Please describe your human rights concern. Your information is handled with full confidentiality.`;
-  addBubble('ai', greeting);
-}
 
 window.sendMessage = async function() {
   const input = document.getElementById('userInput');
   const text = input.value.trim();
   if (!text) return;
-  input.value = ''; autoResize(input);
+  
+  // Prevent multiple rapid requests
+  if (input.disabled) return;
+  input.disabled = true;
+  
+  input.value = ''; 
+  autoResize(input);
   document.getElementById('sendBtn').disabled = true;
   addBubble('user', text);
   conversationHistory.push({ role: 'user', parts: [{ text }] });
   const typingId = showTyping();
+  
   try {
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY()}`,
       { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ system_instruction: { parts: [{ text: SYSTEM_PROMPT }] }, contents: conversationHistory }) }
     );
     const data = await response.json();
     removeTyping(typingId);
-    let aiText = data.candidates?.[0]?.content?.parts?.[0]?.text || "We apologize for the inconvenience. Please try again or contact our team directly.";
-    if (aiText.includes('<<<REGISTER_COMPLAINT>>>')) {
-      const match = aiText.match(/<<<REGISTER_COMPLAINT>>>\s*([\s\S]*?)\s*<<<END>>>/);
-      if (match) { try { await registerComplaint(JSON.parse(match[1])); showToast('✅ Case registered successfully!'); } catch(e) {} }
-      aiText = aiText.replace(/<<<REGISTER_COMPLAINT>>>[\s\S]*?<<<END>>>/g, '').trim();
-    }
+    let aiText = data.candidates?.[0]?.content?.parts?.[0]?.text || "We apologize for the inconvenience. Please try again.";
     addBubble('ai', aiText);
     conversationHistory.push({ role: 'model', parts: [{ text: aiText }] });
-    await saveMessages();
   } catch(err) {
     removeTyping(typingId);
-    addBubble('ai', "⚠️ A network error occurred. Please check your connection and try again.");
+    addBubble('ai', "⚠️ A network error occurred. Please try again.");
   }
+  
   document.getElementById('sendBtn').disabled = false;
-  document.getElementById('userInput').focus();
-}
-
-async function registerComplaint(complaint) {
-  try { await _supabase?.from('complaints').insert({ session_key: sessionKey, user_name: complaint.name, user_contact: complaint.contact, issue_summary: complaint.summary, category: complaint.category || 'human_rights', ai_handled: true, registered_by: currentUser?.email }); } catch(e) {}
-}
-
-async function saveMessages() {
-  try { await _supabase?.from('chat_sessions').update({ messages: conversationHistory, updated_at: new Date().toISOString() }).eq('session_key', sessionKey); } catch(e) {}
+  input.disabled = false;
+  input.focus();
 }
 
 function addBubble(role, text) {
