@@ -679,16 +679,17 @@
        LOGIN / SIGNUP PAGE
     ═══════════════════════════════════════ */
     #page-login {
-      min-height: 100vh;
+      position: fixed;
+      inset: 0;
       background: var(--black);
       align-items: center;
       justify-content: center;
-      position: relative;
-      padding: 80px 20px 40px;
+      overflow-x: hidden;
       overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
     }
     #page-login::before {
-      content: ''; position: absolute; inset: 0;
+      content: ''; position: fixed; inset: 0;
       background-image:
         linear-gradient(rgba(245,197,24,0.04) 1px, transparent 1px),
         linear-gradient(90deg, rgba(245,197,24,0.04) 1px, transparent 1px);
@@ -699,11 +700,24 @@
     }
 
     .login-glow {
-      position: absolute; top: -200px; left: 50%;
-      transform: translateX(-50%); width: 800px; height: 800px;
+      position: fixed; top: -10%; left: 50%;
+      transform: translateX(-50%);
+      width: min(600px, 100vw);
+      height: min(600px, 100vw);
       background: radial-gradient(circle, rgba(245,197,24,0.12) 0%, transparent 65%);
       border-radius: 50%; pointer-events: none;
       animation: floatOrb 15s ease-in-out infinite;
+    }
+
+    .login-inner-wrap {
+      width: 100%;
+      min-height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 60px 20px 40px;
+      position: relative;
+      z-index: 1;
     }
 
     .auth-box { width: 100%; max-width: 460px; z-index: 1; position: relative; }
@@ -1034,6 +1048,7 @@
       .ticker { display: none; }
       nav { top: 0; padding: 14px 20px; }
       .nav-links { display: none; }
+      .nav-login-btn { font-size: 11px; padding: 8px 14px; letter-spacing: 0.04em; }
       h1 { font-size: 44px; }
       .hero { padding: 120px 20px 80px; }
       .hero-stats { grid-template-columns: 1fr 1fr; gap: 32px; }
@@ -1046,10 +1061,19 @@
       .campaign-item { flex-direction: column; align-items: flex-start; padding: 24px; }
       .section-title { font-size: 36px; }
       .about-login-card { flex-direction: column; text-align: center; align-items: stretch; }
-      .auth-card { padding: 24px 20px; }
+      .auth-card { padding: 24px 18px; }
       .modal-btns { flex-direction: column; }
       .footer-cta h3 { font-size: 32px; }
       .footer-bottom { flex-direction: column; }
+      /* Login page mobile */
+      .login-inner-wrap { padding: 50px 16px 32px; align-items: flex-start; }
+      .auth-box { max-width: 100%; }
+      .auth-title { font-size: 26px; }
+    }
+    @media (max-width: 400px) {
+      .auth-card { padding: 20px 14px; }
+      .auth-tabs { gap: 0; }
+      .auth-tab { font-size: 11px; padding: 10px 8px; }
     }
   </style>
 </head>
@@ -1272,6 +1296,7 @@
 ══════════════════════════════════════ -->
 <div id="page-login">
   <div class="login-glow"></div>
+  <div class="login-inner-wrap">
   <div class="auth-box">
 
     <button class="auth-back" onclick="goHome()">← Back to Home</button>
@@ -1337,7 +1362,8 @@
       </div>
 
     </div>
-  </div>
+  </div><!-- end .auth-box -->
+  </div><!-- end .login-inner-wrap -->
 </div><!-- end #page-login -->
 
 
@@ -1629,4 +1655,4 @@ showPage('page-landing');
 updateNavAuth();
 </script>
 </body>
-</html>
+  </html>
