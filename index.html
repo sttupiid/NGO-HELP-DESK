@@ -1076,6 +1076,7 @@
       .auth-tab { font-size: 11px; padding: 10px 8px; }
     }
   </style>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
 
@@ -1411,6 +1412,8 @@
 
 <script>
 const envVars = {};
+let supabaseClient = null;
+
 async function loadEnv() {
   try {
     const response = await fetch('.env');
@@ -1429,11 +1432,50 @@ async function loadEnv() {
     console.warn('⚠️ .env not found or error loading:', error.message);
   }
 }
-loadEnv();
+
+async function initSupabase() {
+  await loadEnv();
+  const url = envVars.SUPABASE_URL;
+  const key = envVars.SUPABASE_ANON_KEY;
+  if (!url || !key) {
+    console.error('❌ Supabase URL or ANON KEY missing in .env file!');
+    return;
+  }
+  supabaseClient = window.supabase.createClient(url, key);
+  console.log('✅ Supabase client initialized (keys from .env)');
+
+  // Check if user already has an active session
+  const { data: { session } } = await supabaseClient.auth.getSession();
+  if (session && session.user) {
+    const meta = session.user.user_metadata || {};
+    saveUser({
+      email: session.user.email,
+      name: meta.full_name || meta.name || session.user.email,
+      role: meta.role || 'client',
+      id: session.user.id
+    });
+  }
+
+  // Listen for auth state changes (login/logout/token refresh)
+  supabaseClient.auth.onAuthStateChange((event, session) => {
+    if (event === 'SIGNED_IN' && session?.user) {
+      const meta = session.user.user_metadata || {};
+      saveUser({
+        email: session.user.email,
+        name: meta.full_name || meta.name || session.user.email,
+        role: meta.role || 'client',
+        id: session.user.id
+      });
+    } else if (event === 'SIGNED_OUT') {
+      currentUser = null;
+      sessionStorage.removeItem('hrUser');
+      updateNavAuth();
+    }
+  });
+}
+initSupabase();
 
 const GEMINI_API_KEY = () => envVars.GEMINI_API_KEY || 'YOUR_GEMINI_API_KEY';
-const SUPABASE_URL = () => envVars.SUPABASE_URL || 'YOUR_SUPABASE_URL';
-const SUPABASE_ANON = () => envVars.SUPABASE_ANON_KEY || 'YOUR_SUPABASE_ANON_KEY';
 
 let currentUser = JSON.parse(sessionStorage.getItem('hrUser') || 'null');
 
@@ -1453,8 +1495,11 @@ function confirmLogout() {
   document.getElementById('logoutModal').classList.add('open');
 }
 function closeLogoutModal() { document.getElementById('logoutModal').classList.remove('open'); }
-function doLogout() {
+async function doLogout() {
   closeLogoutModal();
+  if (supabaseClient) {
+    await supabaseClient.auth.signOut();
+  }
   currentUser = null;
   sessionStorage.removeItem('hrUser');
   updateNavAuth();
@@ -1525,15 +1570,16 @@ async function doLogin() {
   const email    = document.getElementById('loginEmail').value.trim();
   const password = document.getElementById('loginPassword').value;
   if (!email || !password) { showAuthError('Please enter email and password.'); return; }
+  if (!supabaseClient) { showAuthError('System initializing… please wait a moment and try again.'); return; }
   const btn = document.getElementById('loginSubmit');
   btn.textContent = 'Signing in…'; btn.disabled = true;
   try {
-    const stored = JSON.parse(localStorage.getItem('hrUsers') || '{}');
-    const u = stored[email];
-    if (!u) { showAuthError('No account found with this email.'); return; }
-    if (u.password !== btoa(password)) { showAuthError('Incorrect password. Please try again.'); return; }
-    saveUser({ email, name: u.name, role: u.role });
-    showAuthSuccess(`Welcome back, ${u.name}!`);
+    const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+    if (error) { console.error('Login error:', error); showAuthError(error.message); return; }
+    const meta = data.user.user_metadata || {};
+    const userName = meta.full_name || meta.name || email;
+    saveUser({ email, name: userName, role: meta.role || 'client', id: data.user.id });
+    showAuthSuccess(`Welcome back, ${userName}!`);
     setTimeout(() => { goHome(); }, 900);
   } catch(err) {
     showAuthError(err.message || 'Login failed. Please try again.');
@@ -1551,16 +1597,31 @@ async function doSignup() {
   if (password.length < 6) { showAuthError('Password must be at least 6 characters.'); return; }
   if (password !== confirm) { showAuthError('Passwords do not match.'); return; }
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { showAuthError('Please enter a valid email address.'); return; }
+  if (!supabaseClient) { showAuthError('System initializing… please wait a moment and try again.'); return; }
   const btn = document.getElementById('signupSubmit');
   btn.textContent = 'Creating account…'; btn.disabled = true;
   try {
-    const stored = JSON.parse(localStorage.getItem('hrUsers') || '{}');
-    if (stored[email]) { showAuthError('An account with this email already exists.'); return; }
-    stored[email] = { name, role: 'client', password: btoa(password) };
-    localStorage.setItem('hrUsers', JSON.stringify(stored));
-    saveUser({ email, name, role: 'client' });
-    showAuthSuccess(`Account created! Welcome, ${name}!`);
-    setTimeout(() => { goHome(); }, 900);
+    const { data, error } = await supabaseClient.auth.signUp({
+      email,
+      password,
+      options: { data: { full_name: name, role: 'client' } }
+    });
+    if (error) { console.error('Signup error:', error); showAuthError(error.message); return; }
+    // Some Supabase projects require email confirmation
+    if (data.user && !data.user.confirmed_at && data.user.identities?.length === 0) {
+      showAuthError('An account with this email already exists.');
+      return;
+    }
+    if (data.session) {
+      // Auto-confirmed — user is logged in
+      saveUser({ email, name, role: 'client', id: data.user.id });
+      showAuthSuccess(`Account created! Welcome, ${name}!`);
+      setTimeout(() => { goHome(); }, 900);
+    } else {
+      // Email confirmation required
+      showAuthSuccess('Account created! Please check your email to confirm, then log in.');
+      setTimeout(() => { switchTab('login'); }, 2000);
+    }
   } catch(err) {
     showAuthError(err.message || 'Sign up failed. Please try again.');
   } finally {
