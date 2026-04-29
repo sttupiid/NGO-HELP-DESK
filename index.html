@@ -1908,6 +1908,57 @@
       text-align: left;
     }
 
+    /* ── Reach Expert Button ── */
+    .reach-expert-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      margin-top: 10px;
+      padding: 8px 16px;
+      background: transparent;
+      border: 1px solid rgba(245, 197, 24, 0.35);
+      border-radius: 100px;
+      color: var(--yellow-dark);
+      font-family: 'Syne', sans-serif;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: all 0.25s ease;
+    }
+
+    .reach-expert-btn::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--yellow);
+      box-shadow: 0 0 6px var(--yellow);
+      animation: blink 1.5s infinite;
+      flex-shrink: 0;
+    }
+
+    .reach-expert-btn:hover {
+      background: rgba(245, 197, 24, 0.08);
+      border-color: var(--yellow);
+      transform: translateY(-1px);
+      box-shadow: 0 4px 16px rgba(245, 197, 24, 0.15);
+    }
+
+    .reach-expert-btn.connected {
+      border-color: rgba(74, 222, 128, 0.4);
+      color: #16a34a;
+      cursor: default;
+      pointer-events: none;
+    }
+
+    .reach-expert-btn.connected::before {
+      background: #4ade80;
+      box-shadow: 0 0 6px #4ade80;
+      animation: none;
+    }
+
     .typing {
       display: flex;
       gap: 5px;
@@ -2809,14 +2860,16 @@
 
     async function initSupabase() {
       await loadEnv();
-      const url = envVars.SUPABASE_URL;
-      const key = envVars.SUPABASE_ANON_KEY;
+      // Default fallback keys provided by user, prioritized by .env
+      const url = envVars.SUPABASE_URL || 'https://doftqdjucbpnrnshkedi.supabase.co';
+      const key = envVars.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRvZnRxZGp1Y2JwbnJuc2hrZWRpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc0MTQxMjAsImV4cCI6MjA5Mjk5MDEyMH0.rbfxJbTJZzby5WseVEoj_T8kud59NKe_kSZcfUYwY1s';
+
       if (!url || !key) {
-        console.error('❌ Supabase URL or ANON KEY missing in .env file!');
+        console.error('❌ Supabase URL or ANON KEY missing!');
         return;
       }
       supabaseClient = window.supabase.createClient(url, key);
-      console.log('✅ Supabase client initialized (keys from .env)');
+      console.log('✅ Supabase client initialized');
 
       // Check if user already has an active session
       const { data: { session } } = await supabaseClient.auth.getSession();
@@ -2914,7 +2967,7 @@
       if (!currentUser) { showLogin(); return; }
       openHelpDesk();
     }
-    function openHelpDesk() { showPage('page-helpdesk'); }
+    function openHelpDesk() { showPage('page-helpdesk'); ensureSession().then(() => setupRealtimeListener()); }
     function closeHelpDesk() { showPage('page-landing'); }
 
     function switchTab(tab) {
@@ -3003,7 +3056,7 @@
       }
     }
 
-    // Dual-AI System Keys (Loaded from .env)
+    // ── Dual-AI System Keys (Loaded from .env) ──────────────────────────
     const KEY_1 = () => envVars.GEMINI_API_KEY || 'YOUR_GEMINI_API_KEY';
     const KEY_2 = () => envVars.GEMINI_API_KEY_2 || 'YOUR_GEMINI_API_KEY_2';
 
@@ -3014,10 +3067,80 @@
 
     const SYSTEM_PROMPT = `Professional Human Rights assistant. Concise (<100 words), formal, empathetic. Only handle human rights; otherwise say "I am only able to assist with human rights-related concerns." No legal/medical advice.`;
 
+    // ── Supabase session tracking ────────────────────────────────────────
+    // session_key = "client-{userId}-{YYYYMMDD}" — one session per user per day
+    let currentSessionKey = null;
+    let localMessages = []; // mirror of what's in Supabase messages[]
+    let sessionStatus = 'active'; // track if AI is on/off
+
+    function getSessionKey() {
+      if (!currentUser) return null;
+      // Permanent session per user — chat always resumes on login
+      return `client-${currentUser.id}`;
+    }
+
+    // Create or resume a Supabase chat_sessions row for this user+day
+    async function ensureSession() {
+      if (!supabaseClient || !currentUser) return;
+      currentSessionKey = getSessionKey();
+
+      const { data, error } = await supabaseClient
+        .from('chat_sessions')
+        .select('session_key, messages, status')
+        .eq('session_key', currentSessionKey)
+        .single();
+
+      if (error && error.code === 'PGRST116') {
+        // Row doesn't exist — create it
+        const { error: insErr } = await supabaseClient.from('chat_sessions').insert({
+          session_key: currentSessionKey,
+          user_name: currentUser.name || currentUser.email,
+          user_contact: currentUser.email,
+          user_id: currentUser.id,
+          status: 'active',
+          messages: [],
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        });
+        if (insErr) console.error('Session create error:', insErr);
+        else console.log('✅ New session created:', currentSessionKey);
+        localMessages = [];
+      } else if (data) {
+        // Session exists — restore messages
+        localMessages = data.messages || [];
+        sessionStatus = data.status || 'active';
+        console.log('✅ Session resumed:', currentSessionKey, `(${localMessages.length} msgs, status: ${sessionStatus})`);
+        // Update UI based on restored status
+        setTimeout(updateChatInputState, 100);
+        // Replay existing messages into chat UI if any
+        if (localMessages.length > 0) {
+          const container = document.getElementById('messagesContainer');
+          localMessages.forEach(m => {
+            if (m.role === 'user') addBubble('user', m.text, m.time, true);
+            else if (m.role === 'model') addBubble('ai', m.text, m.time, true);
+            else if (m.role === 'agent') addAgentBubble(m.text, m.time);
+          });
+        }
+      } else if (error) {
+        console.error('Session fetch error:', error);
+      }
+    }
+
+    // Persist messages[] to Supabase
+    async function saveMessagesToSupabase() {
+      if (!supabaseClient || !currentSessionKey) return;
+      const { error } = await supabaseClient.from('chat_sessions').update({
+        messages: localMessages,
+        updated_at: new Date().toISOString()
+      }).eq('session_key', currentSessionKey);
+      if (error) console.error('Save messages error:', error);
+    }
+
+    // ── Gemini API call ──────────────────────────────────────────────────
     async function callGemini(userMessage, systemPrompt, apiKey, isSummaryTask = false) {
-      await envPromise; // Ensure keys are loaded before proceeding
-      const retryDelays = [3000, 7000, 15000]; // Retries for 503/429 spikes
-      
+      await envPromise;
+      const retryDelays = [3000, 7000, 15000];
+
       for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
         try {
           const now = Date.now();
@@ -3036,10 +3159,12 @@
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
-                system_instruction: { 
-                  parts: [{ text: isSummaryTask 
-                    ? "Summarize the key facts and user needs of this conversation in one short, descriptive sentence (max 15 words)." 
-                    : systemPrompt }] 
+                system_instruction: {
+                  parts: [{
+                    text: isSummaryTask
+                      ? "Summarize the key facts and user needs of this conversation in one short, descriptive sentence (max 15 words)."
+                      : systemPrompt
+                  }]
                 },
                 contents: [{ role: 'user', parts: [{ text: finalPrompt }] }],
                 generationConfig: { maxOutputTokens: isSummaryTask ? 40 : 300, temperature: isSummaryTask ? 0.3 : 0.7 }
@@ -3049,16 +3174,13 @@
 
           if (response.status === 503 || response.status === 429) {
             if (attempt === retryDelays.length) throw new Error("Server busy. Please try again.");
-            console.warn(`⏳ Server busy (${response.status}). Retrying in ${retryDelays[attempt]/1000}s...`);
             await new Promise(r => setTimeout(r, retryDelays[attempt]));
             continue;
           }
-
           if (!response.ok) {
             const err = await response.json().catch(() => ({}));
             throw new Error(err.error?.message || `API error ${response.status}`);
           }
-          
           return await response.json();
         } catch (e) {
           if (attempt === retryDelays.length) throw e;
@@ -3067,10 +3189,154 @@
       }
     }
 
+    // ── Update chat input based on session status ───────────────────────
+    function updateChatInputState() {
+      const input = document.getElementById('userInput');
+      const sendBtn = document.getElementById('sendBtn');
+      const banner = document.getElementById('agent-wait-banner');
+
+      if (sessionStatus === 'active') {
+        input.placeholder = 'Describe your human rights concern...';
+        input.style.opacity = '1';
+        input.disabled = false;
+        sendBtn.style.opacity = '1';
+        sendBtn.disabled = false;
+        if (banner) banner.remove();
+      } else if (sessionStatus === 'resolved') {
+        input.placeholder = 'This case has been resolved.';
+        input.style.opacity = '0.5';
+        input.disabled = true;
+        sendBtn.style.opacity = '0.5';
+        sendBtn.disabled = true;
+
+        const bannerHtml = `
+          <div style="display:flex; flex-direction:column; gap:8px; align-items:center;">
+            <span>✓ This case has been marked as resolved</span>
+            <button onclick="registerNewComplaint()" style="background:var(--yellow-bright); color:var(--black); border:none; padding:6px 12px; border-radius:6px; font-family:Syne,sans-serif; font-size:11px; font-weight:700; cursor:pointer; text-transform:uppercase; letter-spacing:0.05em;">Register new complaint</button>
+          </div>
+        `;
+
+        if (banner) {
+          banner.innerHTML = bannerHtml;
+          banner.style.background = 'rgba(74, 222, 128, 0.08)';
+          banner.style.borderColor = 'rgba(74, 222, 128, 0.2)';
+          banner.style.color = '#2d7a4d';
+        } else {
+          const container = document.getElementById('messagesContainer');
+          const newBanner = document.createElement('div');
+          newBanner.id = 'agent-wait-banner';
+          newBanner.style.cssText = 'text-align:center;padding:15px 20px;background:rgba(74, 222, 128, 0.08);border:1px solid rgba(74, 222, 128, 0.2);border-radius:12px;font-family:Syne,sans-serif;font-size:12px;color:#2d7a4d;letter-spacing:0.06em;margin:8px 0;';
+          newBanner.innerHTML = bannerHtml;
+          container.appendChild(newBanner);
+          container.scrollTop = container.scrollHeight;
+        }
+      } else {
+        // pending or in-progress (Human Agent mode)
+        input.placeholder = 'Chatting with human expert...';
+        input.style.opacity = '1';
+        input.disabled = false;
+        sendBtn.style.opacity = '1';
+        sendBtn.disabled = false;
+        const expertText = '⚖ Connected to a human expert';
+        if (banner) {
+          banner.textContent = expertText;
+          banner.style.background = 'rgba(245, 197, 24, 0.06)';
+          banner.style.borderColor = 'rgba(245, 197, 24, 0.2)';
+          banner.style.color = 'var(--yellow-dark)';
+        } else {
+          const container = document.getElementById('messagesContainer');
+          const newBanner = document.createElement('div');
+          newBanner.id = 'agent-wait-banner';
+          newBanner.style.cssText = 'text-align:center;padding:12px 20px;background:rgba(245, 197, 24, 0.06);border:1px solid rgba(245, 197, 24, 0.2);border-radius:12px;font-family:Syne,sans-serif;font-size:12px;color:var(--yellow-dark);letter-spacing:0.06em;margin:8px 0;';
+          newBanner.textContent = expertText;
+          container.appendChild(newBanner);
+          container.scrollTop = container.scrollHeight;
+        }
+      }
+    }
+
+    // ── Register new complaint (Soft Reset) ───────────────────────
+    window.registerNewComplaint = async function () {
+      if (confirm("Are you sure you want to start a new complaint? This will clear your current conversation.")) {
+        try {
+          // 1. Reset state
+          localMessages = [];
+          sessionStatus = 'active';
+          currentChatSummary = '';
+
+          // 2. Clear UI
+          document.getElementById('messagesContainer').innerHTML = '';
+          const banner = document.getElementById('agent-wait-banner');
+          if (banner) banner.remove();
+
+          updateChatInputState();
+
+          // 3. Clear Database session (set messages to empty and status to active)
+          if (supabaseClient && currentSessionKey) {
+            await supabaseClient.from('chat_sessions').update({
+              messages: [],
+              status: 'active',
+              updated_at: new Date().toISOString()
+            }).eq('session_key', currentSessionKey);
+          }
+
+          // 4. Initial Greeting
+          addBubble('ai', 'Chat reset successful. I am ready to help you with your new concern. How can I assist you?');
+          
+        } catch (err) {
+          console.error("Reset failed:", err);
+          alert("Could not reset chat. Please refresh the page.");
+        }
+      }
+    };
+
+    // ── Manual escalation — user clicks "Reach to Expert" ───────────────
+    async function reachExpert(btn) {
+      if (!supabaseClient || !currentSessionKey) return;
+      // Disable all expert buttons
+      document.querySelectorAll('.reach-expert-btn').forEach(b => {
+        b.textContent = 'Connecting...';
+        b.classList.add('connected');
+      });
+      const { error } = await supabaseClient.from('chat_sessions').update({
+        status: 'pending',
+        updated_at: new Date().toISOString()
+      }).eq('session_key', currentSessionKey);
+      if (!error) {
+        document.querySelectorAll('.reach-expert-btn').forEach(b => {
+          b.textContent = '✓ Expert notified';
+        });
+        const t = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+        const sysMsg = '🔔 You have been connected to a human rights expert. They will review your conversation and reply shortly.';
+        localMessages.push({ role: 'system', text: sysMsg, time: t });
+        saveMessagesToSupabase();
+        addBubble('ai', sysMsg);
+        setTimeout(() => {
+          document.querySelectorAll('.reach-expert-btn').forEach(b => b.style.display = 'none');
+        }, 2000);
+        console.log('✅ User escalated to agent manually');
+      } else {
+        document.querySelectorAll('.reach-expert-btn').forEach(b => {
+          b.textContent = 'Wanna reach out to an expert?';
+          b.classList.remove('connected');
+        });
+        console.error('Escalation error:', error);
+      }
+    }
+
+    // ── Send message ─────────────────────────────────────────────────────
     window.sendMessage = async function () {
       const input = document.getElementById('userInput');
       const text = input.value.trim();
       if (!text || input.disabled) return;
+
+      // Check for resolved status
+      if (sessionStatus === 'resolved') {
+        addBubble('ai', '⏳ This session has been closed. You cannot send further messages.');
+        return;
+      }
+
+      const isHumanMode = (sessionStatus !== 'active');
 
       if (!currentChatSummary && currentUser) {
         currentChatSummary = `Chat with ${currentUser.name}`;
@@ -3079,16 +3345,42 @@
       input.disabled = true;
       input.value = ''; autoResize(input);
       document.getElementById('sendBtn').disabled = true;
+
+      const timeStr = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+
+      // 1. Show user bubble
       addBubble('user', text);
+
+      // 2. Save user message to local + Supabase
+      localMessages.push({ role: 'user', text, time: timeStr });
+      saveMessagesToSupabase(); // fire-and-forget
+
+      // If in human mode, we STOP here (no AI response)
+      if (isHumanMode) {
+        document.getElementById('sendBtn').disabled = false;
+        input.disabled = false;
+        input.focus();
+        console.log('📬 Message sent to human expert (AI bypassed)');
+        return;
+      }
+
       const typingId = showTyping();
 
       try {
+        // 3. Call AI (responder)
         const data = await callGemini(text, SYSTEM_PROMPT, KEY_1());
         removeTyping(typingId);
-        let aiText = data.candidates?.[0]?.content?.parts?.[0]?.text || "Please try again.";
+        const aiText = data.candidates?.[0]?.content?.parts?.[0]?.text || "Please try again.";
+
+        // 4. Show AI bubble
         addBubble('ai', aiText);
 
-        // Background update for the one-sentence memory
+        // 5. Save AI message to local + Supabase
+        const aiTimeStr = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+        localMessages.push({ role: 'model', text: aiText, time: aiTimeStr });
+        saveMessagesToSupabase();
+
+        // 6. Background: update summary memory (AI 2)
         callGemini(`Current memory: ${currentChatSummary} | New info: ${text}`, "", KEY_2(), true).then(sumData => {
           const newSum = sumData.candidates?.[0]?.content?.parts?.[0]?.text;
           if (newSum) {
@@ -3102,20 +3394,37 @@
         addBubble('ai', "⚠️ The system is currently busy. Please try sending your message again in a few seconds.");
         console.error('Gemini API Error:', err);
       }
+
       document.getElementById('sendBtn').disabled = false;
       input.disabled = false;
       input.focus();
     }
 
-    function addBubble(role, text) {
+    // ── Agent bubble renderer (for replayed agent messages) ──────────────
+    function addAgentBubble(text, time) {
+      const container = document.getElementById('messagesContainer');
+      const wrap = document.createElement('div');
+      wrap.className = 'bubble-wrap'; // Left side for agent reply
+      wrap.innerHTML = `
+        <div style="width:34px;height:34px;border-radius:8px;background:linear-gradient(135deg,var(--yellow-bright),var(--yellow-dark));display:flex;align-items:center;justify-content:center;font-family:'Syne',sans-serif;font-size:12px;font-weight:800;color:var(--black);flex-shrink:0;">⚖</div>
+        <div><div class="bubble" style="background:linear-gradient(135deg,rgba(245,197,24,0.18),rgba(245,197,24,0.08));border:1px solid rgba(245,197,24,0.3);color:var(--dark);">${text}</div>
+        <div class="bubble-time">${time || ''} · Expert Advocate</div></div>`;
+      container.appendChild(wrap);
+      container.scrollTop = container.scrollHeight;
+    }
+
+    function addBubble(role, text, existingTime, skipScroll) {
       const container = document.getElementById('messagesContainer');
       const wrap = document.createElement('div');
       wrap.className = `bubble-wrap ${role === 'user' ? 'user' : ''}`;
-      const now = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+      const now = existingTime || new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
       const aiAvatar = `<div class="bubble-avatar ai"><svg width="18" height="18" viewBox="0 0 100 100" fill="none"><path d="M20 62 Q18 52 25 44 Q30 38 38 36 Q34 28 38 20 Q42 13 50 12 Q58 13 62 20 Q66 28 62 36 Q70 38 75 44 Q82 52 80 62 Q72 58 64 60 Q60 68 50 72 Q40 68 36 60 Q28 58 20 62Z" stroke="rgba(245,197,24,0.95)" stroke-width="5"/><path d="M38 36 Q44 42 50 40 Q56 42 62 36" stroke="rgba(245,197,24,0.95)" stroke-width="4" stroke-linecap="round"/><circle cx="50" cy="72" r="4" fill="rgba(245,197,24,0.95)"/><path d="M50 76 L50 88" stroke="rgba(245,197,24,0.95)" stroke-width="4" stroke-linecap="round"/><path d="M42 82 L58 82" stroke="rgba(245,197,24,0.95)" stroke-width="4" stroke-linecap="round"/></svg></div>`;
       const initials = (currentUser?.name || currentUser?.email || 'U').charAt(0).toUpperCase();
       const userAvatar = `<div style="width:34px;height:34px;border-radius:8px;background:linear-gradient(135deg,#2d2d2d,#0a0a0a);border:1px solid rgba(255,255,255,0.12);display:flex;align-items:center;justify-content:center;font-family:'Syne',sans-serif;font-size:13px;font-weight:700;color:rgba(255,255,255,0.85);flex-shrink:0;">${initials}</div>`;
-      wrap.innerHTML = `${role === 'ai' ? aiAvatar : userAvatar}<div><div class="bubble ${role}">${text}</div><div class="bubble-time">${now}</div></div>`;
+      const expertBtn = (role === 'ai')
+        ? `<button class="reach-expert-btn" onclick="reachExpert(this)">Wanna reach out to an expert?</button>`
+        : '';
+      wrap.innerHTML = `${role === 'ai' ? aiAvatar : userAvatar}<div><div class="bubble ${role}">${text}</div>${expertBtn}<div class="bubble-time">${now}</div></div>`;
       container.appendChild(wrap);
       container.scrollTop = container.scrollHeight;
     }
@@ -3143,6 +3452,41 @@
       const heroH = document.querySelector('.hero')?.offsetHeight || window.innerHeight;
       navEl.style.background = window.scrollY > heroH - 80 ? 'rgba(5,5,5,0.92)' : 'rgba(5,5,5,0.55)';
     });
+
+    // ── Realtime: listen for agent replies on current session ────────────
+    let realtimeChan = null;
+    function setupRealtimeListener() {
+      if (!supabaseClient || !currentSessionKey) return;
+      if (realtimeChan) { supabaseClient.removeChannel(realtimeChan); realtimeChan = null; }
+      realtimeChan = supabaseClient.channel('client-session-rt')
+        .on('postgres_changes', {
+          event: 'UPDATE', schema: 'public', table: 'chat_sessions',
+          filter: `session_key=eq.${currentSessionKey}`
+        }, (payload) => {
+          // Update local session status (agent may have changed it)
+          if (payload.new.status && payload.new.status !== sessionStatus) {
+            sessionStatus = payload.new.status;
+            console.log('🔄 Session status updated to:', sessionStatus);
+            updateChatInputState();
+          }
+          const newMsgs = payload.new.messages || [];
+          // Find new agent messages not yet shown
+          const prevCount = localMessages.length;
+          if (newMsgs.length > prevCount) {
+            const added = newMsgs.slice(prevCount);
+            added.forEach(m => {
+              if (m.role === 'agent') {
+                localMessages.push(m);
+                addAgentBubble(m.text, m.time);
+              } else if (m.role === 'system') {
+                localMessages.push(m);
+                addBubble('ai', m.text, m.time);
+              }
+            });
+          }
+        })
+        .subscribe();
+    }
 
     showPage('page-landing');
     updateNavAuth();
