@@ -4,7 +4,7 @@ An AI-powered help desk system for NGOs that provides instant support to citizen
 
 ---
 
-## 📋 About the Project
+## About the Project
 
 NGO AI Help Desk is a web-based support platform that combines the power of AI with human expertise. Citizens get instant help through an AI chatbot (powered by Google Gemini), and NGO staff can seamlessly take over conversations when complex issues require personal attention.
 
@@ -22,7 +22,7 @@ NGOs often struggle with:
 
 ---
 
-## ✨ Features
+## Features
 
 ### For Citizens
 -  **Chat with AI** - Get instant help 24/7 using Google Gemini
@@ -39,7 +39,7 @@ NGOs often struggle with:
 -  **Complaint Logging** - Register formal complaints
 
 
-## ⚠️ Under Development - Stay Tuned! 
+## ⚠️ Under Development! 
 
 This project is actively being built. Features and documentation will be updated regularly.
 
