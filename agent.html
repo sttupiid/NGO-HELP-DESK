@@ -2063,9 +2063,9 @@
           <button class="nav-item" onclick="location.href='index.html'">
             <div class="nav-left"><span class="ni">&#8962;</span>Home</div>
           </button>
-          <button class="nav-item on" id="nv-active" onclick="setNav('active')">
+          <button class="nav-item on" id="nv-escalated" onclick="setNav('escalated')">
             <div class="nav-left"><span class="ni">&#128229;</span>Inbox</div>
-            <span class="nc nc-a" id="cA">0</span>
+            <span class="nc nc-a" id="cE">0</span>
           </button>
           <button class="nav-item" id="nv-pending" onclick="setNav('pending')">
             <div class="nav-left"><span class="ni">&#9888;</span>Pending</div>
@@ -2150,8 +2150,8 @@
             <button class="mob-nav-item" onclick="location.href='index.html'">
               <span class="ni">&#8962;</span>Home
             </button>
-            <button class="mob-nav-item on" id="mnv-active" onclick="setNav('active')">
-              <span class="ni">&#128229;</span>Inbox<span class="nc nc-a" id="mcA">0</span>
+            <button class="mob-nav-item on" id="mnv-escalated" onclick="setNav('escalated')">
+              <span class="ni">&#128229;</span>Inbox<span class="nc nc-a" id="mcE">0</span>
             </button>
             <button class="mob-nav-item" id="mnv-pending" onclick="setNav('pending')">
               <span class="ni">&#9888;</span>Pending<span class="nc nc-p" id="mcP">0</span>
@@ -2205,7 +2205,7 @@
     var sessions = {};      // key → session row from Supabase
     var complaints = [];    // complaint rows from Supabase
     var activeKey = null;
-    var activeFilter = 'active';
+    var activeFilter = 'escalated';
     var srchQ = '';
     var realtimeChannel = null;
 
@@ -2357,7 +2357,7 @@
         var { data, error } = await sb.from('chat_sessions')
           .select('*')
           .or('assigned_agent_id.eq.' + agent.id + ',and(assigned_agent_id.is.null,status.neq.resolved)')
-          .in('status', ['active', 'pending', 'in-progress', 'resolved'])
+          .in('status', ['escalated', 'pending', 'in-progress', 'resolved'])
           .order('updated_at', { ascending: false });
         if (error) { console.error('Sessions fetch error:', error); return; }
         sessions = {};
@@ -2395,11 +2395,24 @@
 
           // 1. Update the local data for the updated session
           const updatedSess = payload.new;
+          const prevSess = sessions[updatedSess.session_key];
+          const prevMsgCount = (prevSess && prevSess.messages) ? prevSess.messages.length : 0;
+          const newMsgCount = (updatedSess.messages) ? updatedSess.messages.length : 0;
           sessions[updatedSess.session_key] = updatedSess;
 
-          // 2. If this is the session the agent is currently viewing, re-render messages
+          // 2. If this is the session the agent is currently viewing, update the DOM
           if (activeKey === updatedSess.session_key) {
-            renderMsgs();
+            if (newMsgCount < prevMsgCount) {
+              // Messages array was reset (e.g. citizen started a fresh complaint) — full rebuild
+              renderMsgs();
+            } else if (newMsgCount > prevMsgCount) {
+              var added = (updatedSess.messages || []).slice(prevMsgCount);
+              added.forEach(function (m) { appendMsgDOM(m); });
+              markAgentSeen(activeKey);
+            } else {
+              // No new messages — just refresh the seen/read tick, no DOM rebuild
+              updateAgentSeenTick();
+            }
           }
 
           // 3. Refresh the sidebar list to show latest preview
@@ -2422,6 +2435,14 @@
     }
     function cleanupRealtime() {
       if (realtimeChannel) { sb.removeChannel(realtimeChannel); realtimeChannel = null; }
+    }
+
+    // Tell Supabase "an agent is looking at this chat right now"
+    async function markAgentSeen(key) {
+      if (!key) return;
+      try {
+        await sb.from('chat_sessions').update({ agent_last_seen: new Date().toISOString() }).eq('session_key', key);
+      } catch (e) { console.warn('markAgentSeen failed:', e); }
     }
 
     // ─── STATUS UPDATE ────────────────────────────────────────────────
@@ -2512,14 +2533,14 @@
 
     function setNav(f) {
       activeFilter = f;
-      var filters = ['active', 'pending', 'in-progress', 'resolved'];
+      var filters = ['escalated', 'pending', 'in-progress', 'resolved'];
       for (var i = 0; i < filters.length; i++) {
         var el = document.getElementById('nv-' + filters[i]);
         var mel = document.getElementById('mnv-' + filters[i]);
         if (el) el.className = 'nav-item' + (filters[i] === f ? ' on' : '');
         if (mel) mel.className = 'mob-nav-item' + (filters[i] === f ? ' on' : '');
       }
-      var labels = { active: 'Inbox', pending: 'Pending', 'in-progress': 'In Progress', resolved: 'Solved' };
+      var labels = { escalated: 'Inbox', pending: 'Pending', 'in-progress': 'In Progress', resolved: 'Solved' };
       document.getElementById('tbTitle').textContent = labels[f] || f;
       closeChat();
       closeMob();
@@ -2533,16 +2554,16 @@
     // ─── STATS ────────────────────────────────────────────────────────
     function renderStats() {
       var all = Object.values(sessions);
-      var counts = { active: 0, pending: 0, 'in-progress': 0, resolved: 0 };
+      var counts = { escalated: 0, pending: 0, 'in-progress': 0, resolved: 0 };
       for (var i = 0; i < all.length; i++) {
         var s = all[i];
         if (counts[s.status] !== undefined) counts[s.status]++;
       }
-      document.getElementById('cA').textContent = counts.active;
+      document.getElementById('cE').textContent = counts.escalated;
       document.getElementById('cP').textContent = counts.pending;
       document.getElementById('cI').textContent = counts['in-progress'];
       document.getElementById('cR').textContent = counts.resolved;
-      document.getElementById('mcA').textContent = counts.active;
+      document.getElementById('mcE').textContent = counts.escalated;
       document.getElementById('mcP').textContent = counts.pending;
       document.getElementById('mcI').textContent = counts['in-progress'];
       document.getElementById('mcR').textContent = counts.resolved;
@@ -2559,10 +2580,10 @@
     }
 
     function statusDotCls(status) {
-      return { active: 'da', pending: 'dp', 'in-progress': 'di', resolved: 'ds' }[status] || 'da';
+      return { escalated: 'da', pending: 'dp', 'in-progress': 'di', resolved: 'ds' }[status] || 'da';
     }
     function statusBadgeCls(status) {
-      return { active: 'ba', pending: 'bp', 'in-progress': 'bi', resolved: 'bs' }[status] || 'ba';
+      return { escalated: 'ba', pending: 'bp', 'in-progress': 'bi', resolved: 'bs' }[status] || 'ba';
     }
 
     function renderList() {
@@ -2578,7 +2599,7 @@
       filtered.sort(function (a, b) { return new Date(b.updated_at) - new Date(a.updated_at); });
       document.getElementById('tbCount').textContent = filtered.length ? filtered.length + ' session' + (filtered.length !== 1 ? 's' : '') : '';
       if (!filtered.length) {
-        var emptyLabels = { active: 'inbox', pending: 'pending', 'in-progress': 'in progress', resolved: 'solved' };
+        var emptyLabels = { escalated: 'inbox', pending: 'pending', 'in-progress': 'in progress', resolved: 'solved' };
         var emptyName = emptyLabels[activeFilter] || activeFilter;
         list.innerHTML = '<div class="empty">No ' + emptyName + ' sessions.<br><span style="font-size:11px;opacity:.6">New sessions from the Help Desk will appear here in real time.</span></div>';
         return;
@@ -2625,37 +2646,43 @@
     }
 
     // ─── OPEN SESSION ─────────────────────────────────────────────────
-    async function openSess(key) {
+    function openSess(key) {
       activeKey = key;
       var s = sessions[key]; if (!s) return;
 
-      // Auto-move inbox (active) → pending when agent opens
-      if (s.status === 'active') {
-        await updateSessionStatus(key, 'pending');
-        renderStats();
-      }
-
-      renderList();
+      // Open the chat immediately — no network wait, so it never feels laggy
       document.getElementById('sessPanel').style.display = 'none';
       document.getElementById('chatPanel').className = 'chat-panel on';
       document.getElementById('cphAv').textContent = (s.user_name || 'U').charAt(0).toUpperCase();
       document.getElementById('cphName').textContent = s.user_name || 'Anonymous';
-      var sess = sessions[key];
-      document.getElementById('cphSess').textContent = sess.user_contact || '';
+      document.getElementById('cphSess').textContent = s.user_contact || '';
       renderActs();
       renderMsgs();
       updateInputState();
+
+      // Auto-move Inbox (escalated) → Pending the moment the agent sees it —
+      // done optimistically, then persisted in the background
+      if (s.status === 'escalated') {
+        sessions[key].status = 'pending';
+        renderList();
+        renderStats();
+        renderActs();
+        updateSessionStatus(key, 'pending');
+      } else {
+        renderList();
+      }
+
+      // Record that an agent is now viewing this chat (for the seen/read tick)
+      markAgentSeen(key);
     }
 
     function renderActs() {
       var s = sessions[activeKey]; if (!s) return;
       var c = document.getElementById("cphAct");
-      if (s.status === "active") {
-        c.innerHTML = '<button class="cph-btn btn-i" onclick="setStatus(\'in-progress\')">Make In Progress</button><button class="cph-btn btn-s" onclick="setStatus(\'resolved\')">Make Solved</button>';
-      } else if (s.status === "pending" || s.status === "in-progress") {
-        c.innerHTML = '<button class="cph-btn btn-ai" onclick="proceedAI()">&#9654; Proceed AI</button><button class="cph-btn btn-s" onclick="setStatus(\'resolved\')">Make Solved</button>';
-      } else {
+      if (s.status === "resolved") {
         c.innerHTML = "";
+      } else {
+        c.innerHTML = '<button class="cph-btn btn-ai" onclick="proceedAI()">&#9654; Proceed AI</button><button class="cph-btn btn-s" onclick="setStatus(\'resolved\')">Make Solved</button>';
       }
     }
 
@@ -2666,7 +2693,7 @@
       renderList();
     }
 
-    // ─── RENDER MESSAGES ──────────────────────────────────────────────
+    // ─── RENDER MESSAGES (full rebuild — only when a session is first opened) ──
     function renderMsgs() {
       var s = sessions[activeKey]; if (!s) return;
       var c = document.getElementById('chatMsgs'); c.innerHTML = '';
@@ -2674,37 +2701,69 @@
       c.appendChild(dd);
       var msgs = s.messages || [];
       for (var i = 0; i < msgs.length; i++) {
-        var m = msgs[i];
-        // Support both old format (role/text) and Gemini format (role/parts)
-        var role = m.role; // 'user', 'model' (ai), 'agent', 'system'
-        var text = m.text || m.content || (m.parts && m.parts[0] && m.parts[0].text) || '';
-        var timeStr = m.time || m.timestamp || '';
-
-        // System messages (escalation notifications) — render as info banner
-        if (role === 'system') {
-          var sysDiv = document.createElement('div');
-          sysDiv.className = 'date-div';
-          sysDiv.style.cssText = 'color:var(--y);font-size:11px;padding:12px 0;';
-          sysDiv.textContent = text;
-          c.appendChild(sysDiv);
-          continue;
-        }
-
-        var isAg = role === 'agent';
-        var isAI = role === 'model' || role === 'ai';
-        var wrap = document.createElement('div');
-        wrap.className = 'msg-wrap' + (isAg ? ' am' : '');
-        var ini = isAg ? (agent && agent.name ? agent.name.charAt(0).toUpperCase() : 'A') : (s.user_name || 'U').charAt(0).toUpperCase();
-        var avCls = isAg ? 'agav' : (isAI ? 'aav' : 'uav');
-        var bCls = isAg ? 'agb' : (isAI ? 'ab' : 'ub');
-        var lbl = isAg ? (agent && agent.name ? agent.name : 'Agent') : (isAI ? 'AI Assistant' : (s.user_name || 'User'));
-        var avContent = isAI
-          ? '<svg width="14" height="14" viewBox="0 0 100 100" fill="none"><path d="M20 62 Q18 52 25 44 Q30 38 38 36 Q34 28 38 20 Q42 13 50 12 Q58 13 62 20 Q66 28 62 36 Q70 38 75 44 Q82 52 80 62 Q72 58 64 60 Q60 68 50 72 Q40 68 36 60 Q28 58 20 62Z" stroke="rgba(245,197,24,0.9)" stroke-width="6"/></svg>'
-          : ini;
-        wrap.innerHTML = '<div class="msg-av ' + avCls + '">' + avContent + '</div><div class="msg-cnt"><div class="bubble ' + bCls + '">' + esc(text) + '</div><div class="msg-meta">' + lbl + (timeStr ? ' · ' + timeStr : '') + '</div></div>';
-        c.appendChild(wrap);
+        appendMsgDOM(msgs[i]);
       }
       c.scrollTop = c.scrollHeight;
+    }
+
+    // Append exactly ONE message to the chat DOM — used for live updates so we
+    // never wipe/rebuild the whole conversation just because one new line arrived
+    function appendMsgDOM(m) {
+      var s = sessions[activeKey]; if (!s) return;
+      var c = document.getElementById('chatMsgs');
+      var role = m.role; // 'user', 'model' (ai), 'agent', 'system'
+      var text = m.text || m.content || (m.parts && m.parts[0] && m.parts[0].text) || '';
+      var timeStr = m.time || m.timestamp || '';
+
+      if (role === 'system') {
+        var sysDiv = document.createElement('div');
+        sysDiv.className = 'date-div';
+        sysDiv.style.cssText = 'color:var(--y);font-size:11px;padding:12px 0;';
+        sysDiv.textContent = text;
+        c.appendChild(sysDiv);
+        c.scrollTop = c.scrollHeight;
+        return;
+      }
+
+      var isAg = role === 'agent';
+      var isAI = role === 'model' || role === 'ai';
+
+      // Only the latest agent message shows a tick — drop it from the previous one
+      if (isAg) {
+        var oldTicks = document.querySelectorAll('.agent-seen-tick');
+        oldTicks.forEach(function (el) { el.remove(); });
+      }
+
+      var wrap = document.createElement('div');
+      wrap.className = 'msg-wrap' + (isAg ? ' am' : '');
+      var ini = isAg ? (agent && agent.name ? agent.name.charAt(0).toUpperCase() : 'A') : (s.user_name || 'U').charAt(0).toUpperCase();
+      var avCls = isAg ? 'agav' : (isAI ? 'aav' : 'uav');
+      var bCls = isAg ? 'agb' : (isAI ? 'ab' : 'ub');
+      var lbl = isAg ? (agent && agent.name ? agent.name : 'Agent') : (isAI ? 'AI Assistant' : (s.user_name || 'User'));
+      var avContent = isAI
+        ? '<svg width="14" height="14" viewBox="0 0 100 100" fill="none"><path d="M20 62 Q18 52 25 44 Q30 38 38 36 Q34 28 38 20 Q42 13 50 12 Q58 13 62 20 Q66 28 62 36 Q70 38 75 44 Q82 52 80 62 Q72 58 64 60 Q60 68 50 72 Q40 68 36 60 Q28 58 20 62Z" stroke="rgba(245,197,24,0.9)" stroke-width="6"/></svg>'
+        : ini;
+      var tickHtml = '';
+      if (isAg) {
+        var seen = m.iso && s.client_last_seen && new Date(s.client_last_seen) >= new Date(m.iso);
+        tickHtml = ' <span class="agent-seen-tick" data-iso="' + (m.iso || '') + '" style="opacity:' + (seen ? '1' : '.55') + ';color:' + (seen ? 'var(--y)' : 'inherit') + ';">' + (seen ? '✓✓ Seen' : '✓ Sent') + '</span>';
+      }
+      wrap.innerHTML = '<div class="msg-av ' + avCls + '">' + avContent + '</div><div class="msg-cnt"><div class="bubble ' + bCls + '">' + esc(text) + '</div><div class="msg-meta">' + lbl + (timeStr ? ' · ' + timeStr : '') + tickHtml + '</div></div>';
+      c.appendChild(wrap);
+      c.scrollTop = c.scrollHeight;
+    }
+
+    // Refresh only the tick text on the agent's latest message — no DOM rebuild
+    function updateAgentSeenTick() {
+      var s = sessions[activeKey]; if (!s) return;
+      var tick = document.querySelector('.agent-seen-tick');
+      if (!tick) return;
+      var msgIso = tick.getAttribute('data-iso');
+      if (msgIso && s.client_last_seen && new Date(s.client_last_seen) >= new Date(msgIso)) {
+        tick.textContent = '✓✓ Seen';
+        tick.style.opacity = '1';
+        tick.style.color = 'var(--y)';
+      }
     }
 
     // ─── SEND AGENT MESSAGE ───────────────────────────────────────────
@@ -2714,20 +2773,41 @@
       var s = sessions[activeKey]; if (!s) return;
       inp.value = ''; autoR(inp);
       var t = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
-      var newMsg = { role: 'agent', text: txt, time: t };
+      var isoStr = new Date().toISOString();
+      var newMsg = { role: 'agent', text: txt, time: t, iso: isoStr };
       var updatedMsgs = [...(s.messages || []), newMsg];
-      // Optimistic update
-      sessions[activeKey].messages = updatedMsgs;
-      sessions[activeKey].updated_at = new Date().toISOString();
-      renderMsgs();
-      renderList();
-      // Persist to Supabase
-      var { error } = await sb.from('chat_sessions').update({
-        messages: updatedMsgs,
-        updated_at: new Date().toISOString()
-      }).eq('session_key', activeKey);
-      if (error) { toast('Failed to send message'); console.error(error); }
-      else { renderStats(); toast('Reply sent'); }
+
+      // Replying to an escalated/pending case moves it into In Progress automatically
+      var movesToInProgress = (s.status === 'escalated' || s.status === 'pending');
+
+      // Persist message + status together in a single write — do this FIRST,
+      // so a UI/render hiccup below can never block the actual send.
+      var updatePayload = { messages: updatedMsgs, updated_at: new Date().toISOString() };
+      if (movesToInProgress) {
+        updatePayload.status = 'in-progress';
+        updatePayload.assigned_agent_id = agent.id;
+        updatePayload.assigned_agent_name = agent.name;
+      }
+      var { error } = await sb.from('chat_sessions').update(updatePayload).eq('session_key', activeKey);
+      if (error) {
+        toast('Failed to send message');
+        console.error('sendMsg update error:', error);
+        return;
+      }
+      toast('Reply sent');
+
+      // Update local state + re-render (wrapped so a render bug can't hide a send failure)
+      try {
+        sessions[activeKey].messages = updatedMsgs;
+        if (movesToInProgress) sessions[activeKey].status = 'in-progress';
+        sessions[activeKey].updated_at = updatePayload.updated_at;
+        appendMsgDOM(newMsg);
+        renderList();
+        renderActs();
+        renderStats();
+      } catch (renderErr) {
+        console.error('sendMsg render error (message was still sent):', renderErr);
+      }
     }
 
     // ─── PROCEED AI — hand back to AI from agent ─────────────────────

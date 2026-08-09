@@ -3065,18 +3065,43 @@
     const MIN_REQUEST_GAP = 1200;
     const GEMINI_MODEL = 'gemini-flash-lite-latest';
 
-    const SYSTEM_PROMPT = `Professional Human Rights assistant. Concise (<100 words), formal, empathetic. Only handle human rights; otherwise say "I am only able to assist with human rights-related concerns." No legal/medical advice.`;
+    const SYSTEM_PROMPT = `You are a professional Human Rights assistant. Reply concisely (<100 words), formal, empathetic. Only handle human rights topics; otherwise say "I am only able to assist with human rights-related concerns." Never give legal or medical advice — for those, escalate.
+
+Decide, for every message, whether this case needs a human expert. There are two levels:
+
+"urgent": true — ONLY for immediate danger: active threats, violence happening now, or risk to someone's safety right now. Escalate this immediately, even on the very first message.
+
+"escalate": true (without urgent) — for everything else that eventually needs a human: explicit request to talk to a real person/lawyer/expert, a case needing legal/medical advice, an active legal case or formal complaint, or the AI clearly failing to help after several tries. For these NON-urgent cases, do NOT escalate too early — first try to understand the situation properly by asking a couple of clarifying questions and gathering context, the way a good intake worker would. Only escalate once you have a reasonably clear picture of the issue, not after a single message.
+
+If neither applies, set both to false and keep helping normally.
+
+Respond ONLY with a single JSON object, no markdown fences, no extra text, in exactly this shape:
+{"reply": "<your message to the user>", "escalate": true or false, "urgent": true or false}`;
 
     // ── Supabase session tracking ────────────────────────────────────────
-    // session_key = "client-{userId}-{YYYYMMDD}" — one session per user per day
+    // session_key = "client-{userId}" — permanent session per user
     let currentSessionKey = null;
     let localMessages = []; // mirror of what's in Supabase messages[]
     let sessionStatus = 'active'; // track if AI is on/off
+    let agentLastSeenAt = null; // ISO string — last time an agent viewed this chat
 
     function getSessionKey() {
       if (!currentUser) return null;
       // Permanent session per user — chat always resumes on login
       return `client-${currentUser.id}`;
+    }
+
+    // Tell Supabase "the citizen is looking at this chat right now"
+    async function markClientSeen() {
+      if (!supabaseClient || !currentSessionKey) return;
+      // Only count as "seen" while the help desk page is actually open/visible
+      const helpDeskEl = document.getElementById('page-helpdesk');
+      if (!helpDeskEl || !helpDeskEl.classList.contains('active')) return;
+      try {
+        await supabaseClient.from('chat_sessions')
+          .update({ client_last_seen: new Date().toISOString() })
+          .eq('session_key', currentSessionKey);
+      } catch (e) { console.warn('markClientSeen failed:', e); }
     }
 
     // Create or resume a Supabase chat_sessions row for this user+day
@@ -3086,7 +3111,7 @@
 
       const { data, error } = await supabaseClient
         .from('chat_sessions')
-        .select('session_key, messages, status')
+        .select('*')
         .eq('session_key', currentSessionKey)
         .single();
 
@@ -3109,6 +3134,7 @@
         // Session exists — restore messages
         localMessages = data.messages || [];
         sessionStatus = data.status || 'active';
+        agentLastSeenAt = data.agent_last_seen || null;
         console.log('✅ Session resumed:', currentSessionKey, `(${localMessages.length} msgs, status: ${sessionStatus})`);
         // Update UI based on restored status
         setTimeout(updateChatInputState, 100);
@@ -3116,14 +3142,17 @@
         if (localMessages.length > 0) {
           const container = document.getElementById('messagesContainer');
           localMessages.forEach(m => {
-            if (m.role === 'user') addBubble('user', m.text, m.time, true);
+            if (m.role === 'user') addBubble('user', m.text, m.time, true, m.iso);
             else if (m.role === 'model') addBubble('ai', m.text, m.time, true);
             else if (m.role === 'agent') addAgentBubble(m.text, m.time);
           });
+          updateSeenTicks();
         }
       } else if (error) {
         console.error('Session fetch error:', error);
       }
+      // Citizen is actively viewing the chat now
+      markClientSeen();
     }
 
     // Persist messages[] to Supabase
@@ -3167,7 +3196,11 @@
                   }]
                 },
                 contents: [{ role: 'user', parts: [{ text: finalPrompt }] }],
-                generationConfig: { maxOutputTokens: isSummaryTask ? 40 : 300, temperature: isSummaryTask ? 0.3 : 0.7 }
+                generationConfig: {
+                  maxOutputTokens: isSummaryTask ? 40 : 300,
+                  temperature: isSummaryTask ? 0.3 : 0.7,
+                  ...(isSummaryTask ? {} : { responseMimeType: 'application/json' })
+                }
               })
             }
           );
@@ -3216,13 +3249,15 @@
           </div>
         `;
 
+        const container = document.getElementById('messagesContainer');
         if (banner) {
           banner.innerHTML = bannerHtml;
           banner.style.background = 'rgba(74, 222, 128, 0.08)';
           banner.style.borderColor = 'rgba(74, 222, 128, 0.2)';
           banner.style.color = '#2d7a4d';
+          container.appendChild(banner); // move to bottom — new messages may have arrived after it
+          container.scrollTop = container.scrollHeight;
         } else {
-          const container = document.getElementById('messagesContainer');
           const newBanner = document.createElement('div');
           newBanner.id = 'agent-wait-banner';
           newBanner.style.cssText = 'text-align:center;padding:15px 20px;background:rgba(74, 222, 128, 0.08);border:1px solid rgba(74, 222, 128, 0.2);border-radius:12px;font-family:Syne,sans-serif;font-size:12px;color:#2d7a4d;letter-spacing:0.06em;margin:8px 0;';
@@ -3238,19 +3273,21 @@
         sendBtn.style.opacity = '1';
         sendBtn.disabled = false;
         const expertText = '⚖ Connected to a human expert';
+        const container2 = document.getElementById('messagesContainer');
         if (banner) {
           banner.textContent = expertText;
           banner.style.background = 'rgba(245, 197, 24, 0.06)';
           banner.style.borderColor = 'rgba(245, 197, 24, 0.2)';
           banner.style.color = 'var(--yellow-dark)';
+          container2.appendChild(banner); // move to bottom — new messages may have arrived after it
+          container2.scrollTop = container2.scrollHeight;
         } else {
-          const container = document.getElementById('messagesContainer');
           const newBanner = document.createElement('div');
           newBanner.id = 'agent-wait-banner';
           newBanner.style.cssText = 'text-align:center;padding:12px 20px;background:rgba(245, 197, 24, 0.06);border:1px solid rgba(245, 197, 24, 0.2);border-radius:12px;font-family:Syne,sans-serif;font-size:12px;color:var(--yellow-dark);letter-spacing:0.06em;margin:8px 0;';
           newBanner.textContent = expertText;
-          container.appendChild(newBanner);
-          container.scrollTop = container.scrollHeight;
+          container2.appendChild(newBanner);
+          container2.scrollTop = container2.scrollHeight;
         }
       }
     }
@@ -3290,37 +3327,24 @@
       }
     };
 
-    // ── Manual escalation — user clicks "Reach to Expert" ───────────────
-    async function reachExpert(btn) {
+    // ── AI-driven escalation — model itself decides when a human is needed ──
+    async function autoEscalate() {
       if (!supabaseClient || !currentSessionKey) return;
-      // Disable all expert buttons
-      document.querySelectorAll('.reach-expert-btn').forEach(b => {
-        b.textContent = 'Connecting...';
-        b.classList.add('connected');
-      });
+      sessionStatus = 'escalated';
       const { error } = await supabaseClient.from('chat_sessions').update({
-        status: 'pending',
+        status: 'escalated',
         updated_at: new Date().toISOString()
       }).eq('session_key', currentSessionKey);
       if (!error) {
-        document.querySelectorAll('.reach-expert-btn').forEach(b => {
-          b.textContent = '✓ Expert notified';
-        });
         const t = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
-        const sysMsg = '🔔 You have been connected to a human rights expert. They will review your conversation and reply shortly.';
+        const sysMsg = '🔔 This conversation has been forwarded to a human rights expert. They will review it and reply shortly.';
         localMessages.push({ role: 'system', text: sysMsg, time: t });
         saveMessagesToSupabase();
         addBubble('ai', sysMsg);
-        setTimeout(() => {
-          document.querySelectorAll('.reach-expert-btn').forEach(b => b.style.display = 'none');
-        }, 2000);
-        console.log('✅ User escalated to agent manually');
+        updateChatInputState();
+        console.log('✅ AI auto-escalated this session to an agent');
       } else {
-        document.querySelectorAll('.reach-expert-btn').forEach(b => {
-          b.textContent = 'Wanna reach out to an expert?';
-          b.classList.remove('connected');
-        });
-        console.error('Escalation error:', error);
+        console.error('Auto-escalation error:', error);
       }
     }
 
@@ -3347,12 +3371,13 @@
       document.getElementById('sendBtn').disabled = true;
 
       const timeStr = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+      const isoStr = new Date().toISOString();
 
       // 1. Show user bubble
-      addBubble('user', text);
+      addBubble('user', text, timeStr, false, isoStr);
 
       // 2. Save user message to local + Supabase
-      localMessages.push({ role: 'user', text, time: timeStr });
+      localMessages.push({ role: 'user', text, time: timeStr, iso: isoStr });
       saveMessagesToSupabase(); // fire-and-forget
 
       // If in human mode, we STOP here (no AI response)
@@ -3367,10 +3392,33 @@
       const typingId = showTyping();
 
       try {
-        // 3. Call AI (responder)
+        // 3. Call AI (responder) — model returns {"reply": "...", "escalate": true|false}
         const data = await callGemini(text, SYSTEM_PROMPT, KEY_1());
         removeTyping(typingId);
-        const aiText = data.candidates?.[0]?.content?.parts?.[0]?.text || "Please try again.";
+        const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+        let aiText = "Please try again.";
+        let shouldEscalate = false;
+        let isUrgent = false;
+        try {
+          const cleaned = rawText.trim().replace(/^```json\s*|```\s*$/g, '');
+          const parsed = JSON.parse(cleaned);
+          aiText = parsed.reply || aiText;
+          shouldEscalate = parsed.escalate === true;
+          isUrgent = parsed.urgent === true;
+        } catch (parseErr) {
+          // Model didn't return valid JSON — fall back to showing raw text
+          if (rawText) aiText = rawText;
+          console.warn('AI response was not valid JSON, using raw text:', parseErr);
+        }
+
+        // Guard: non-urgent escalation shouldn't fire too early — give the
+        // conversation a few exchanges before handing off, unless it's urgent.
+        const userTurns = localMessages.filter(m => m.role === 'user').length;
+        const MIN_TURNS_BEFORE_ESCALATE = 3;
+        if (shouldEscalate && !isUrgent && userTurns < MIN_TURNS_BEFORE_ESCALATE) {
+          shouldEscalate = false;
+        }
 
         // 4. Show AI bubble
         addBubble('ai', aiText);
@@ -3379,6 +3427,11 @@
         const aiTimeStr = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
         localMessages.push({ role: 'model', text: aiText, time: aiTimeStr });
         saveMessagesToSupabase();
+
+        // 5b. If the AI decided this case needs a human, hand it off automatically
+        if (shouldEscalate) {
+          await autoEscalate();
+        }
 
         // 6. Background: update summary memory (AI 2)
         callGemini(`Current memory: ${currentChatSummary} | New info: ${text}`, "", KEY_2(), true).then(sumData => {
@@ -3401,19 +3454,23 @@
     }
 
     // ── Agent bubble renderer (for replayed agent messages) ──────────────
+    function escHtml(s) {
+      return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
     function addAgentBubble(text, time) {
       const container = document.getElementById('messagesContainer');
       const wrap = document.createElement('div');
       wrap.className = 'bubble-wrap'; // Left side for agent reply
       wrap.innerHTML = `
         <div style="width:34px;height:34px;border-radius:8px;background:linear-gradient(135deg,var(--yellow-bright),var(--yellow-dark));display:flex;align-items:center;justify-content:center;font-family:'Syne',sans-serif;font-size:12px;font-weight:800;color:var(--black);flex-shrink:0;">⚖</div>
-        <div><div class="bubble" style="background:linear-gradient(135deg,rgba(245,197,24,0.18),rgba(245,197,24,0.08));border:1px solid rgba(245,197,24,0.3);color:var(--dark);">${text}</div>
+        <div><div class="bubble" style="background:linear-gradient(135deg,rgba(245,197,24,0.18),rgba(245,197,24,0.08));border:1px solid rgba(245,197,24,0.3);color:var(--dark);">${escHtml(text)}</div>
         <div class="bubble-time">${time || ''} · Expert Advocate</div></div>`;
       container.appendChild(wrap);
       container.scrollTop = container.scrollHeight;
     }
 
-    function addBubble(role, text, existingTime, skipScroll) {
+    function addBubble(role, text, existingTime, skipScroll, iso) {
       const container = document.getElementById('messagesContainer');
       const wrap = document.createElement('div');
       wrap.className = `bubble-wrap ${role === 'user' ? 'user' : ''}`;
@@ -3421,12 +3478,28 @@
       const aiAvatar = `<div class="bubble-avatar ai"><svg width="18" height="18" viewBox="0 0 100 100" fill="none"><path d="M20 62 Q18 52 25 44 Q30 38 38 36 Q34 28 38 20 Q42 13 50 12 Q58 13 62 20 Q66 28 62 36 Q70 38 75 44 Q82 52 80 62 Q72 58 64 60 Q60 68 50 72 Q40 68 36 60 Q28 58 20 62Z" stroke="rgba(245,197,24,0.95)" stroke-width="5"/><path d="M38 36 Q44 42 50 40 Q56 42 62 36" stroke="rgba(245,197,24,0.95)" stroke-width="4" stroke-linecap="round"/><circle cx="50" cy="72" r="4" fill="rgba(245,197,24,0.95)"/><path d="M50 76 L50 88" stroke="rgba(245,197,24,0.95)" stroke-width="4" stroke-linecap="round"/><path d="M42 82 L58 82" stroke="rgba(245,197,24,0.95)" stroke-width="4" stroke-linecap="round"/></svg></div>`;
       const initials = (currentUser?.name || currentUser?.email || 'U').charAt(0).toUpperCase();
       const userAvatar = `<div style="width:34px;height:34px;border-radius:8px;background:linear-gradient(135deg,#2d2d2d,#0a0a0a);border:1px solid rgba(255,255,255,0.12);display:flex;align-items:center;justify-content:center;font-family:'Syne',sans-serif;font-size:13px;font-weight:700;color:rgba(255,255,255,0.85);flex-shrink:0;">${initials}</div>`;
-      const expertBtn = (role === 'ai')
-        ? `<button class="reach-expert-btn" onclick="reachExpert(this)">Wanna reach out to an expert?</button>`
-        : '';
-      wrap.innerHTML = `${role === 'ai' ? aiAvatar : userAvatar}<div><div class="bubble ${role}">${text}</div>${expertBtn}<div class="bubble-time">${now}</div></div>`;
+      // Only the citizen's own latest message shows a sent/seen tick
+      let tickHtml = '';
+      if (role === 'user') {
+        document.querySelectorAll('.seen-tick').forEach(el => el.remove());
+        tickHtml = `<span class="seen-tick" data-iso="${iso || ''}" style="font-size:10px;opacity:.55;margin-left:6px;">✓ Sent</span>`;
+      }
+      wrap.innerHTML = `${role === 'ai' ? aiAvatar : userAvatar}<div><div class="bubble ${role}">${escHtml(text)}</div><div class="bubble-time">${now}${tickHtml}</div></div>`;
       container.appendChild(wrap);
       container.scrollTop = container.scrollHeight;
+      if (role === 'user') updateSeenTicks();
+    }
+
+    // Reflect the agent's last-seen time on the citizen's latest sent message
+    function updateSeenTicks() {
+      const tick = document.querySelector('.seen-tick');
+      if (!tick) return;
+      const msgIso = tick.getAttribute('data-iso');
+      if (agentLastSeenAt && msgIso && new Date(agentLastSeenAt) >= new Date(msgIso)) {
+        tick.textContent = '✓✓ Seen';
+        tick.style.opacity = '1';
+        tick.style.color = 'var(--yellow-dark)';
+      }
     }
 
     function showTyping() {
@@ -3469,6 +3542,11 @@
             console.log('🔄 Session status updated to:', sessionStatus);
             updateChatInputState();
           }
+          // Track when the agent last viewed this chat, for the seen/read tick
+          if (payload.new.agent_last_seen && payload.new.agent_last_seen !== agentLastSeenAt) {
+            agentLastSeenAt = payload.new.agent_last_seen;
+            updateSeenTicks();
+          }
           const newMsgs = payload.new.messages || [];
           // Find new agent messages not yet shown
           const prevCount = localMessages.length;
@@ -3483,6 +3561,8 @@
                 addBubble('ai', m.text, m.time);
               }
             });
+            // Citizen is looking at the chat right now — mark it seen
+            markClientSeen();
           }
         })
         .subscribe();
